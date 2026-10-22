@@ -28,6 +28,7 @@ const AddNewVersionDrawer = ({ open, onClose, latestVersion }) => {
     useAgentDetailsStore();
   const { enqueueSnackbar } = useSnackbar();
   const queryClient = useQueryClient();
+  const agentKind = agentDetails?.agent_kind;
 
   const {
     control,
@@ -35,10 +36,15 @@ const AddNewVersionDrawer = ({ open, onClose, latestVersion }) => {
     reset,
     watch,
     formState,
+    setError: setFieldError,
     setValue,
     getValues,
     trigger,
-  } = useAgentConfigForm(createAgentDefinitionSchema(), agentDetails);
+    clearErrors,
+  } = useAgentConfigForm(
+    createAgentDefinitionSchema({ agentDefinitionId, agentKind }),
+    agentDetails,
+  );
 
   useEffect(() => {
     return () => resetAgentDetails();
@@ -67,10 +73,13 @@ const AddNewVersionDrawer = ({ open, onClose, latestVersion }) => {
 
   const { onSubmit } = useAgentSubmit({
     agentDefinitionId,
+    agentKind,
     reset,
     queryClient,
     enqueueSnackbar,
     setError,
+    setFieldError,
+    setValue,
     setSelectedVersion,
     onClose: resetFormAndClose,
   });
@@ -200,6 +209,8 @@ const AddNewVersionDrawer = ({ open, onClose, latestVersion }) => {
             setValue={setValue}
             getValues={getValues}
             trigger={trigger}
+            clearErrors={clearErrors}
+            agentKind={agentKind}
           />
         </Box>
         <Box

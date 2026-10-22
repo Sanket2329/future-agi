@@ -8,12 +8,15 @@ import { getLoadingStateWithRespectiveStatus } from "src/sections/test-detail/co
 import PathAnalysisView from "./PathAnalysisView";
 import TranscriptView from "./TranscriptView";
 import VoiceAudioBridge from "./VoiceAudioBridge";
+import { LEFT_PANEL_TAB_SHAPE } from "./constants";
 
 const TABS = {
   TRANSCRIPT: "transcript",
   CHECKLIST: "checklist",
   GRAPH: "graph",
 };
+
+const NO_EXTRA_TABS = [];
 
 const PATH_VIEW_MODE = {
   [TABS.CHECKLIST]: "checklist",
@@ -34,7 +37,13 @@ const PATH_VIEW_MODE = {
  * a hidden container on non-transcript tabs) so seeking via click from
  * a path view keeps the audio player hydrated.
  */
-const VoiceLeftPanel = ({ data, scenarioId, embedded = false }) => {
+const VoiceLeftPanel = ({
+  data,
+  scenarioId,
+  embedded = false,
+  hidePathTabs = false,
+  extraTabs = NO_EXTRA_TABS,
+}) => {
   const isSimulate = data?.module === "simulate";
   const [currentTab, setCurrentTab] = useState(TABS.TRANSCRIPT);
 
@@ -46,10 +55,16 @@ const VoiceLeftPanel = ({ data, scenarioId, embedded = false }) => {
 
   const filteredTranscript = useMemo(() => {
     const transcript = data?.transcript;
-    return transcript?.filter((item) => item.speakerRole !== "system");
+    return transcript?.filter((item) => item.speaker_role !== "system");
   }, [data]);
 
-  const showPathTabs = isSimulate && !!data?.id;
+  const callExecutionId =
+    data?.call_execution_id || (data?.id !== data?.trace_id ? data?.id : null);
+  // A host whose calls have no checklist/graph data yet can hide the tabs.
+  const showPathTabs =
+    !hidePathTabs &&
+    isSimulate &&
+    (!!callExecutionId || !!data?.scenario_graph?.nodes?.length);
 
   const tabs = useMemo(() => {
     const t = [
@@ -71,11 +86,18 @@ const VoiceLeftPanel = ({ data, scenarioId, embedded = false }) => {
         icon: "mdi:graph-outline",
       });
     }
+    extraTabs.forEach(({ label, value, icon }) =>
+      t.push({ label, value, icon }),
+    );
     return t;
-  }, [showPathTabs]);
+  }, [showPathTabs, extraTabs]);
 
-  const isTranscriptTab = currentTab === TABS.TRANSCRIPT;
-  const isPathTab = currentTab === TABS.CHECKLIST || currentTab === TABS.GRAPH;
+  const selectedTab = tabs.some((tab) => tab.value === currentTab)
+    ? currentTab
+    : TABS.TRANSCRIPT;
+  const isTranscriptTab = selectedTab === TABS.TRANSCRIPT;
+  const activeExtraTab = extraTabs.find((tab) => tab.value === selectedTab);
+  const isPathTab = selectedTab === TABS.CHECKLIST || selectedTab === TABS.GRAPH;
 
   return (
     <Stack
@@ -92,7 +114,7 @@ const VoiceLeftPanel = ({ data, scenarioId, embedded = false }) => {
       {!embedded && (
         <Box sx={{ px: 1.25, flexShrink: 0 }}>
           <CompactTabs
-            value={currentTab}
+            value={selectedTab}
             onChange={(_, value) => setCurrentTab(value)}
             tabs={tabs}
           />
@@ -176,13 +198,15 @@ const VoiceLeftPanel = ({ data, scenarioId, embedded = false }) => {
             <ShowComponent condition={isPathTab && showPathTabs}>
               <PathAnalysisView
                 data={data}
-                scenarioId={scenarioId}
-                openedExecutionId={data?.id}
+                scenarioId={scenarioId || data?.scenario_id}
+                openedExecutionId={callExecutionId}
+                testExecutionId={data?.test_execution_id}
                 enabled={isPathTab}
-                viewMode={PATH_VIEW_MODE[currentTab]}
+                viewMode={PATH_VIEW_MODE[selectedTab]}
                 onRequestTranscript={() => setCurrentTab(TABS.TRANSCRIPT)}
               />
             </ShowComponent>
+            {activeExtraTab?.content}
           </>
         </ShowComponent>
       </Box>
@@ -194,6 +218,8 @@ VoiceLeftPanel.propTypes = {
   data: PropTypes.object.isRequired,
   scenarioId: PropTypes.string,
   embedded: PropTypes.bool,
+  hidePathTabs: PropTypes.bool,
+  extraTabs: PropTypes.arrayOf(LEFT_PANEL_TAB_SHAPE),
 };
 
 export default VoiceLeftPanel;

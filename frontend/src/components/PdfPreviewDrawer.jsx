@@ -2,12 +2,12 @@ import {
   Box,
   Drawer,
   Typography,
-  CircularProgress,
   IconButton,
   Paper,
   Stack,
   Button,
 } from "@mui/material";
+import { LoadingScreen } from "src/components/loading-screen";
 import React, { useState, useEffect, useRef } from "react";
 import { Viewer, Worker } from "@react-pdf-viewer/core";
 import { defaultLayoutPlugin } from "@react-pdf-viewer/default-layout";
@@ -413,12 +413,7 @@ const PdfPreviewDrawer = () => {
               bgcolor="background.paper"
               zIndex={1}
             >
-              <Box textAlign="center">
-                <CircularProgress />
-                <Typography variant="body2" color="text.secondary" mt={2}>
-                  Loading preview...
-                </Typography>
-              </Box>
+              <LoadingScreen variant="orbit" message="Loading preview..." />
             </Box>
           )}
 

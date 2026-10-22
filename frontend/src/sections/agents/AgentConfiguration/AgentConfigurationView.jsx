@@ -26,26 +26,35 @@ const AgentConfigurationView = () => {
   const { enqueueSnackbar } = useSnackbar();
   const queryClient = useQueryClient();
   const theme = useTheme();
+  const agentKind = agentDetails?.agent_kind;
   // const [open, setOpen] = useState(false);
   const {
     control,
     handleSubmit,
     reset,
     formState,
+    setError: setFieldError,
     setValue,
     getValues,
     trigger,
-  } = useAgentConfigForm(createAgentDefinitionSchema(), agentDetails);
+    clearErrors,
+  } = useAgentConfigForm(
+    createAgentDefinitionSchema({ agentDefinitionId, agentKind }),
+    agentDetails,
+  );
 
   const { errors, isSubmitting, isDirty } = formState;
   const [error, setError] = useState("");
 
   const { onSubmit } = useAgentSubmit({
     agentDefinitionId,
+    agentKind,
     reset,
     queryClient,
     enqueueSnackbar,
     setError,
+    setFieldError,
+    setValue,
     onClose: null,
     setSelectedVersion,
   });
@@ -156,6 +165,8 @@ const AgentConfigurationView = () => {
               trigger={trigger}
               setValue={setValue}
               getValues={getValues}
+              clearErrors={clearErrors}
+              agentKind={agentKind}
             />
             <Box sx={{ display: "flex", flexDirection: "column" }}>
               <FormTextFieldV2

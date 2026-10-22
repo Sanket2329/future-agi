@@ -2,6 +2,7 @@ import React, {
   useState,
   useCallback,
   useDeferredValue,
+  useEffect,
   useMemo,
   useRef,
 } from "react";
@@ -16,7 +17,7 @@ import {
   Tabs,
   Typography,
 } from "@mui/material";
-import { alpha } from "@mui/material/styles";
+import { alpha, useTheme } from "@mui/material/styles";
 import Iconify from "src/components/iconify";
 import CustomTooltip from "src/components/tooltip/CustomTooltip";
 import {
@@ -25,12 +26,18 @@ import {
   formatTokenCount,
 } from "src/sections/projects/LLMTracing/formatters";
 import Markdown from "react-markdown";
-import { JsonView, allExpanded, defaultStyles } from "react-json-view-lite";
+import {
+  JsonView,
+  allExpanded,
+  darkStyles,
+  defaultStyles,
+} from "react-json-view-lite";
 import "react-json-view-lite/dist/index.css";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { enqueueSnackbar } from "notistack";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import axios from "src/utils/axios";
+import { apiPath } from "src/api/contracts/api-surface";
 import SmartPreview from "./SmartPreview";
 import { isOpenAIMessages } from "./ChatMessageView";
 import useSearchHighlight from "./useSearchHighlight";
@@ -39,7 +46,17 @@ import { normalizeTags } from "./tagUtils";
 import TagChip from "./TagChip";
 import TagInput from "./TagInput";
 import EvalsTabView, { collectAllEvalsFromEntry } from "./EvalsTabView";
+import EvalRollupBreakdown from "./EvalRollupSection/EvalRollupBreakdown";
 import { openFixWithFalcon } from "src/sections/falcon-ai/helpers/openFixWithFalcon";
+import ImageCard from "src/components/multimodal/ImageCard";
+import AudioCellRenderer from "src/sections/common/DevelopCellRenderer/CellRenderers/AudioCellRenderer";
+import useWavesurferCache from "src/hooks/use-wavesurfer-cache";
+import {
+  isImageAttrPath,
+  isAudioAttrPath,
+} from "src/components/multimodal/extractMediaSrc";
+import { AudioPlaybackProvider } from "src/components/custom-audio/context-provider/AudioPlaybackContext";
+import SingleImageViewerProvider from "src/sections/develop-detail/Common/SingleImageViewer/SingleImageViewerProvider";
 
 /* ── helpers ──────────────────────────────────────────── */
 
@@ -62,50 +79,6 @@ function stringify(val) {
   if (typeof val === "string") return val;
   return JSON.stringify(val, null, 2);
 }
-
-/* ── JsonSyntax — lightweight JSON syntax highlighting ── */
-
-const JsonSyntax = ({ json }) => {
-  if (!json) return null;
-  // Regex-based syntax coloring — matches keys, strings, numbers, booleans, null
-  const parts = json.split(/("(?:[^"\\]|\\.)*")\s*:/g);
-  const result = [];
-  for (let i = 0; i < parts.length; i++) {
-    if (i % 2 === 1) {
-      // This is a key
-      result.push(
-        <span key={i} style={{ color: "var(--text-primary)", fontWeight: 500 }}>
-          {parts[i]}
-        </span>,
-      );
-      result.push(
-        <span key={`${i}c`} style={{ color: "var(--text-disabled)" }}>
-          :{" "}
-        </span>,
-      );
-    } else {
-      // This is value content — colorize inline
-      const chunk = parts[i];
-      const colored = chunk.replace(
-        /("(?:[^"\\]|\\.)*")|(\b(?:true|false)\b)|(\bnull\b)|(-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)/g,
-        (match, str, bool, nul, num) => {
-          if (str) return `<span style="color:#b5520a">${str}</span>`;
-          if (bool) return `<span style="color:#9333EA">${match}</span>`;
-          if (nul)
-            return `<span style="color:var(--text-disabled)">${match}</span>`;
-          if (num) return `<span style="color:#1750EB">${match}</span>`;
-          return match;
-        },
-      );
-      result.push(
-        <span key={i} dangerouslySetInnerHTML={{ __html: colored }} />,
-      );
-    }
-  }
-  return <>{result}</>;
-};
-
-JsonSyntax.propTypes = { json: PropTypes.string };
 
 /* ── MetricChip ───────────────────────────────────────── */
 
@@ -391,6 +364,8 @@ const JsonPreviewBlock = ({
   hideInlineSearch = false,
 }) => {
   const [jsonSearch, setJsonSearch] = useState("");
+  const isDark = useTheme().palette.mode === "dark";
+  const jsonViewBase = isDark ? darkStyles : defaultStyles;
 
   const jsonData = useMemo(() => {
     const data = {};
@@ -493,11 +468,27 @@ const JsonPreviewBlock = ({
       {/* JSON tree view */}
       <Box
         sx={{
-          maxHeight: "calc(100vh - 380px)",
-          overflow: "auto",
+          // No vertical cap: a fixed height nests a second scroll container
+          // inside the Preview pane and traps the wheel there.
+          overflowX: "auto",
           p: 1,
           fontSize: 12,
-          "& > div": { fontFamily: "monospace !important" },
+          "& > div": {
+            fontFamily: "monospace !important",
+            backgroundColor: "transparent !important",
+          },
+          // Syntax palette, theme-aware via global.css.
+          "& .fi-json-label": { color: "var(--text-primary)" },
+          "& .fi-json-clickable": {
+            color: "var(--text-primary)",
+            fontWeight: 600,
+            cursor: "pointer",
+          },
+          "& .fi-json-string": { color: "var(--syntax-string)" },
+          "& .fi-json-number": { color: "var(--syntax-number)" },
+          "& .fi-json-boolean": { color: "var(--syntax-boolean)" },
+          "& .fi-json-nullish": { color: "var(--text-disabled)" },
+          "& .fi-json-punctuation": { color: "var(--syntax-punctuation)" },
           // Highlight matching text lines
           ...(activeSearch
             ? {
@@ -512,22 +503,21 @@ const JsonPreviewBlock = ({
           data={jsonData}
           shouldExpandNode={allExpanded}
           clickToExpandNode
+          // Class names, not style objects — the objects previously here
+          // became `class="[object Object]"` and applied nothing. Blank
+          // container/basicChildStyle preserves the original spacing.
           style={{
-            ...defaultStyles,
-            container: {
-              fontFamily: "'IBM Plex Mono', monospace",
-              fontSize: "11px",
-              lineHeight: "18px",
-              backgroundColor: "transparent",
-            },
-            basicChildStyle: { paddingLeft: "16px" },
-            label: { color: "var(--text-primary)", fontWeight: 500 },
-            stringValue: { color: "#b5520a" },
-            numberValue: { color: "#1750EB" },
-            booleanValue: { color: "#9333EA" },
-            nullValue: { color: "var(--text-disabled)" },
-            undefinedValue: { color: "var(--text-disabled)" },
-            punctuation: { color: "var(--text-disabled)" },
+            ...jsonViewBase,
+            container: "",
+            basicChildStyle: "",
+            label: "fi-json-label",
+            clickableLabel: `${jsonViewBase.clickableLabel} fi-json-clickable`,
+            stringValue: "fi-json-string",
+            numberValue: "fi-json-number",
+            booleanValue: "fi-json-boolean",
+            nullValue: "fi-json-nullish",
+            undefinedValue: "fi-json-nullish",
+            punctuation: "fi-json-punctuation",
           }}
         />
       </Box>
@@ -589,6 +579,7 @@ const LogViewRow = ({
   isExpanded,
   onToggle,
   viewMode = "markdown",
+  drawerOpen = true,
 }) => {
   const { span, depth, entry } = item;
   const type = (span.observation_type || "unknown").toLowerCase();
@@ -822,7 +813,12 @@ const LogViewRow = ({
                 viewMode={viewMode}
               />
               {Object.keys(attributes).length > 0 && (
-                <AttributesCard attributes={attributes} />
+                <AttributesCard
+                  attributes={attributes}
+                  spanId={span?.id}
+                  traceId={span?.trace}
+                  drawerOpen={drawerOpen}
+                />
               )}
             </Stack>
           ) : (
@@ -849,6 +845,7 @@ LogViewRow.propTypes = {
   isExpanded: PropTypes.bool,
   onToggle: PropTypes.func,
   viewMode: PropTypes.string,
+  drawerOpen: PropTypes.bool,
 };
 
 const LOG_COLUMNS = [
@@ -860,7 +857,7 @@ const LOG_COLUMNS = [
   { key: "annotations", label: "Ann.", width: 36 },
 ];
 
-const LogViewTable = ({ allSpans, traceStartTime }) => {
+const LogViewTable = ({ allSpans, traceStartTime, drawerOpen = true }) => {
   const [logSearch, setLogSearch] = useState("");
   const [expandedRows, setExpandedRows] = useState(new Set());
   const [logViewMode, setLogViewMode] = useState("markdown"); // "markdown" | "json"
@@ -1184,6 +1181,7 @@ const LogViewTable = ({ allSpans, traceStartTime }) => {
               isExpanded={expandedRows.has(item.span.id)}
               onToggle={() => handleToggle(item.span.id)}
               viewMode={logViewMode}
+              drawerOpen={drawerOpen}
             />
           ))
         )}
@@ -1195,11 +1193,12 @@ const LogViewTable = ({ allSpans, traceStartTime }) => {
 LogViewTable.propTypes = {
   allSpans: PropTypes.array,
   traceStartTime: PropTypes.any,
+  drawerOpen: PropTypes.bool,
 };
 
 /* ── InlineTagsRow — always-visible tag chips with add/remove ── */
 
-const InlineTagsRow = ({ tags = [], traceId, spanId }) => {
+const InlineTagsRow = ({ tags = [], traceId, spanId, readOnly = false }) => {
   const [isAdding, setIsAdding] = useState(false);
   const queryClient = useQueryClient();
 
@@ -1208,12 +1207,14 @@ const InlineTagsRow = ({ tags = [], traceId, spanId }) => {
   const { mutate: saveTags, isPending } = useMutation({
     mutationFn: (newTags) => {
       if (spanId) {
-        return axios.post(`/tracer/observation-span/update-tags/`, {
+        return axios.post(apiPath("/tracer/observation-span/update-tags/"), {
           span_id: spanId,
           tags: newTags,
         });
       }
-      return axios.patch(`/tracer/trace/${traceId}/tags/`, { tags: newTags });
+      return axios.patch(apiPath("/tracer/trace/{id}/tags/", { id: traceId }), {
+        tags: newTags,
+      });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["trace-detail"] });
@@ -1242,6 +1243,7 @@ const InlineTagsRow = ({ tags = [], traceId, spanId }) => {
           name={tag.name}
           color={tag.color}
           size="small"
+          readOnly={readOnly}
           onRemove={() => persist(normalized.filter((_, i) => i !== idx))}
           onColorChange={(c) =>
             persist(
@@ -1257,7 +1259,8 @@ const InlineTagsRow = ({ tags = [], traceId, spanId }) => {
         />
       ))}
 
-      {isAdding ? (
+      {!readOnly &&
+        (isAdding ? (
         <Box
           sx={{ minWidth: 130 }}
           onBlur={(e) => {
@@ -1297,7 +1300,7 @@ const InlineTagsRow = ({ tags = [], traceId, spanId }) => {
           <Iconify icon="mdi:plus" width={12} />
           tag
         </Box>
-      )}
+      ))}
     </Stack>
   );
 };
@@ -1306,6 +1309,7 @@ InlineTagsRow.propTypes = {
   tags: PropTypes.array,
   traceId: PropTypes.string,
   spanId: PropTypes.string,
+  readOnly: PropTypes.bool,
 };
 
 /* ── EvalCard — single eval score display ─────────────── */
@@ -1345,7 +1349,7 @@ const EvalCard = ({ ev, spanLabel }) => {
           px: 1.25,
           py: 0.75,
           cursor: explanation ? "pointer" : "default",
-          "&:hover": explanation ? { bgcolor: "rgba(0,0,0,0.02)" } : {},
+          "&:hover": explanation ? { bgcolor: "action.hover" } : {},
         }}
       >
         <Box
@@ -1434,7 +1438,7 @@ EvalCard.propTypes = { ev: PropTypes.object, spanLabel: PropTypes.string };
 
 /* ── AnnotationsTabContent — uses ScoresListSection ── */
 
-const AnnotationsTabContent = ({ spanId, traceId, onAction }) => (
+const AnnotationsTabContent = ({ spanId, traceId, projectId, onAction }) => (
   <Box sx={{ display: "flex", flexDirection: "column", height: "100%" }}>
     <Box sx={{ flex: 1, overflow: "auto", p: 2 }}>
       <ScoresListSection
@@ -1442,6 +1446,7 @@ const AnnotationsTabContent = ({ spanId, traceId, onAction }) => (
         sourceId={spanId}
         secondarySourceType="trace"
         secondarySourceId={traceId}
+        projectId={projectId}
         title=""
         openQueueItemOnRowClick
         renderActions={
@@ -1474,6 +1479,7 @@ const AnnotationsTabContent = ({ spanId, traceId, onAction }) => (
 AnnotationsTabContent.propTypes = {
   spanId: PropTypes.string,
   traceId: PropTypes.string,
+  projectId: PropTypes.string,
   onAction: PropTypes.func,
 };
 
@@ -1720,8 +1726,29 @@ const SpanDetailPane = ({
   onClose,
   onAction,
   onSelectSpan,
+  initialEvalFocus = false,
+  drawerOpen = true,
+  readOnly = false,
 }) => {
   const [activeTab, setActiveTab] = useState("preview");
+  const evalFocusSeededRef = useRef(false);
+  const lastEntryIdRef = useRef(null);
+  useEffect(() => {
+    if (!drawerOpen) {
+      evalFocusSeededRef.current = false;
+      return;
+    }
+    if (initialEvalFocus && !evalFocusSeededRef.current) {
+      evalFocusSeededRef.current = true;
+      setActiveTab("evals");
+    }
+  }, [drawerOpen, initialEvalFocus]);
+  useEffect(() => {
+    const entryId = entry?.observation_span?.id || entry?.observationSpan?.id;
+    if (entryId === lastEntryIdRef.current) return;
+    lastEntryIdRef.current = entryId;
+    if (!initialEvalFocus) setActiveTab("preview");
+  }, [entry, initialEvalFocus]);
   const [searchQuery, setSearchQuery] = useState("");
   const [viewMode, setViewMode] = useState("markdown"); // "markdown" | "json" | "chat"
 
@@ -1816,11 +1843,15 @@ const SpanDetailPane = ({
         label: "Evals",
         icon: "mdi:checkbox-marked-circle-outline",
       },
-      { key: "annotations", label: "Annotations", icon: "mdi:pencil-outline" },
+      !readOnly && {
+        key: "annotations",
+        label: "Annotations",
+        icon: "mdi:pencil-outline",
+      },
       { key: "events", label: "Events", icon: "mdi:bell-outline" },
     );
-    return tabs;
-  }, [hasLogView]);
+    return tabs.filter(Boolean);
+  }, [hasLogView, readOnly]);
 
   if (!span) return null;
 
@@ -1917,6 +1948,7 @@ const SpanDetailPane = ({
           tags={span?.tags || []}
           traceId={span?.trace}
           spanId={span?.id}
+          readOnly={readOnly}
         />
       </Box>
 
@@ -2106,6 +2138,7 @@ const SpanDetailPane = ({
                 ContentCard={ContentCard}
                 AttributesCard={AttributesCard}
                 JsonPreviewBlock={JsonPreviewBlock}
+                drawerOpen={drawerOpen}
               />
             </Box>
           </Box>
@@ -2113,17 +2146,30 @@ const SpanDetailPane = ({
 
         {/* Log View Tab — only for root span */}
         {activeTab === "log" && (
-          <LogViewTable allSpans={allSpans} traceStartTime={traceStartTime} />
+          <LogViewTable
+            allSpans={allSpans}
+            traceStartTime={traceStartTime}
+            drawerOpen={drawerOpen}
+          />
         )}
 
         {/* Evals Tab — this span + child span evals. Rendered via the
             shared EvalsTabView component so the trace drawer and the
             voice drawer use the same eval UI. */}
         {activeTab === "evals" && (
-          <EvalsTabView
+          <>
+            {entry?.eval_rollup && (
+              <EvalRollupBreakdown
+                rollup={entry.eval_rollup}
+                onSelectSpan={onSelectSpan}
+              />
+            )}
+            <EvalsTabView
             evals={collectAllEvalsFromEntry(entry)}
             onSelectSpan={onSelectSpan}
             emptyMessage="No evaluations for this span or its children"
+            showErrorLocalization={!readOnly}
+            showFixWithFalcon={!readOnly}
             onFixWithFalcon={({ level, ev, failingEvals, allEvals }) => {
               const traceId = span?.trace;
               if (level === "eval" && ev) {
@@ -2165,14 +2211,16 @@ const SpanDetailPane = ({
                 },
               });
             }}
-          />
+            />
+          </>
         )}
 
         {/* Annotations Tab */}
-        {activeTab === "annotations" && (
+        {activeTab === "annotations" && !readOnly && (
           <AnnotationsTabContent
             spanId={span?.id}
             traceId={span?.trace}
+            projectId={projectId}
             onAction={onAction}
           />
         )}
@@ -2223,13 +2271,40 @@ function deepMatch(val, q) {
 
 /* ── AttrValueCell — renders a value with expand/collapse ── */
 
-const AttrValueCell = ({ value, expanded, onToggle, searchQuery: _sq }) => {
+const AttrValueCell = ({
+  value,
+  expanded,
+  onToggle,
+  searchQuery: _sq,
+  path,
+  spanId,
+  traceId,
+  audioCache,
+}) => {
   if (value === null || value === undefined) {
     return (
       <Typography variant="caption" color="text.disabled" sx={{ fontSize: 11 }}>
         null
       </Typography>
     );
+  }
+
+  if (typeof value === "string" && value && path) {
+    if (isImageAttrPath(path)) {
+      return <ImageCard image={value} />;
+    }
+    if (isAudioAttrPath(path)) {
+      return (
+        <AudioCellRenderer
+          value={value}
+          cacheKey={`${traceId}-${spanId}::${path}`}
+          getWaveSurferInstance={audioCache?.getWaveSurferInstance}
+          storeWaveSurferInstance={audioCache?.storeWaveSurferInstance}
+          updateWaveSurferInstance={audioCache?.updateWaveSurferInstance}
+          editable={false}
+        />
+      );
+    }
   }
 
   const isObj = typeof value === "object" && !Array.isArray(value);
@@ -2287,7 +2362,14 @@ const AttrValueCell = ({ value, expanded, onToggle, searchQuery: _sq }) => {
               ? value.map((v, i) => [String(i), v])
               : Object.entries(value)
             ).map(([k, v]) => (
-              <AttrNestedRow key={k} path={k} value={v} />
+              <AttrNestedRow
+                key={k}
+                path={k}
+                value={v}
+                spanId={spanId}
+                traceId={traceId}
+                audioCache={audioCache}
+              />
             ))}
           </Box>
         )}
@@ -2305,7 +2387,7 @@ const AttrValueCell = ({ value, expanded, onToggle, searchQuery: _sq }) => {
       variant="caption"
       sx={{
         fontSize: 11,
-        color: typeof value === "string" ? "#b5520a" : "text.primary",
+        color: typeof value === "string" ? "syntax.string" : "text.primary",
         wordBreak: "break-all",
       }}
     >
@@ -2319,11 +2401,15 @@ AttrValueCell.propTypes = {
   expanded: PropTypes.bool,
   onToggle: PropTypes.func,
   searchQuery: PropTypes.string,
+  path: PropTypes.string,
+  spanId: PropTypes.string,
+  traceId: PropTypes.string,
+  audioCache: PropTypes.object,
 };
 
 /* ── AttrNestedRow — recursive nested row ── */
 
-const AttrNestedRow = ({ path, value }) => {
+const AttrNestedRow = ({ path, value, spanId, traceId, audioCache }) => {
   const [open, setOpen] = useState(false);
   const isComplex = value !== null && typeof value === "object";
 
@@ -2364,6 +2450,10 @@ const AttrNestedRow = ({ path, value }) => {
             value={value}
             expanded={open}
             onToggle={() => setOpen(!open)}
+            path={path}
+            spanId={spanId}
+            traceId={traceId}
+            audioCache={audioCache}
           />
         </Box>
       </Box>
@@ -2371,7 +2461,13 @@ const AttrNestedRow = ({ path, value }) => {
   );
 };
 
-AttrNestedRow.propTypes = { path: PropTypes.string, value: PropTypes.any };
+AttrNestedRow.propTypes = {
+  path: PropTypes.string,
+  value: PropTypes.any,
+  spanId: PropTypes.string,
+  traceId: PropTypes.string,
+  audioCache: PropTypes.object,
+};
 
 /* ── AttributesCard — searchable Path | Value table ───── */
 
@@ -2379,10 +2475,38 @@ const AttributesCard = ({
   attributes,
   searchQuery,
   hideInlineSearch = false,
+  spanId,
+  traceId,
+  drawerOpen = true,
 }) => {
   const [expanded, setExpanded] = useState(true);
   const [attrSearch, setAttrSearch] = useState("");
   const [expandedKeys, setExpandedKeys] = useState({});
+
+  const {
+    getWaveSurferInstance,
+    storeWaveSurferInstance,
+    updateWaveSurferInstance,
+    clearWaveSurferCache,
+  } = useWavesurferCache();
+
+  // Drawer uses variant="persistent" and the card is reused across span/trace
+  // navigation, so unmount cleanup never fires — re-run on each dep change to
+  // destroy stale wavesurfer instances.
+  useEffect(() => {
+    return () => {
+      clearWaveSurferCache();
+    };
+  }, [drawerOpen, traceId, spanId, clearWaveSurferCache]);
+
+  const audioCache = useMemo(
+    () => ({
+      getWaveSurferInstance,
+      storeWaveSurferInstance,
+      updateWaveSurferInstance,
+    }),
+    [getWaveSurferInstance, storeWaveSurferInstance, updateWaveSurferInstance],
+  );
 
   // Parse attributes if string
   const parsed = useMemo(() => {
@@ -2418,6 +2542,8 @@ const AttributesCard = ({
   }, []);
 
   return (
+    <SingleImageViewerProvider>
+      <AudioPlaybackProvider>
     <Box
       sx={{
         border: "1px solid",
@@ -2616,6 +2742,10 @@ const AttributesCard = ({
                           expanded={expandedKeys[key]}
                           onToggle={() => toggleKey(key)}
                           searchQuery={query}
+                          path={key}
+                          spanId={spanId}
+                          traceId={traceId}
+                          audioCache={audioCache}
                         />
                       )}
                     </Box>
@@ -2627,6 +2757,8 @@ const AttributesCard = ({
         </Box>
       </Collapse>
     </Box>
+      </AudioPlaybackProvider>
+    </SingleImageViewerProvider>
   );
 };
 
@@ -2634,6 +2766,9 @@ AttributesCard.propTypes = {
   attributes: PropTypes.object,
   searchQuery: PropTypes.string,
   hideInlineSearch: PropTypes.bool,
+  spanId: PropTypes.string,
+  traceId: PropTypes.string,
+  drawerOpen: PropTypes.bool,
 };
 
 SpanDetailPane.propTypes = {
@@ -2642,6 +2777,7 @@ SpanDetailPane.propTypes = {
     observationSpan: PropTypes.object,
     eval_scores: PropTypes.array,
     evalScores: PropTypes.array,
+    eval_rollup: PropTypes.object,
     annotations: PropTypes.array,
   }),
   allSpans: PropTypes.array,
@@ -2652,6 +2788,9 @@ SpanDetailPane.propTypes = {
   onClose: PropTypes.func.isRequired,
   onAction: PropTypes.func,
   onSelectSpan: PropTypes.func,
+  initialEvalFocus: PropTypes.bool,
+  drawerOpen: PropTypes.bool,
+  readOnly: PropTypes.bool,
 };
 
 export default React.memo(SpanDetailPane);
